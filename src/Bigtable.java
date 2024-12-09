@@ -32,166 +32,140 @@ public class Bigtable {
     public BigtableTableAdminClient adminClient;
 
     public static void main(String[] args) throws Exception {
-        Bigtable testbt = new Bigtable();
-        testbt.run();
-    }
-
-    public void connect() throws IOException {
-        // TODO: Write code to create a data client and admin client to connect to
-        // Google Bigtable
-        // See sample code in HelloWorld.java for help
+        BigtableAssignment bigtable = new BigtableAssignment();
+        bigtable.run();
     }
 
     public void run() throws Exception {
         connect();
-        // TODO: Comment or uncomment these as you proceed. Once load data, comment them
-        // out.
-        deleteTable();
+        deleteTable(); // Delete the table before creating it for fresh runs
         createTable();
         loadData();
-        int temp = query1();
-        System.out.println("Temperature: " + temp);
-        int windspeed = query2();
-        System.out.println("Windspeed: " + windspeed);
-        ArrayList<Object[]> data = query3();
-        StringBuffer buf = new StringBuffer();
-        for (int i = 0; i < data.size(); i++) {
-            Object[] vals = data.get(i);
-            for (int j = 0; j < vals.length; j++)
-                buf.append(vals[j].toString() + " ");
-            buf.append("\n");
-        }
-        System.out.println(buf.toString());
-        temp = query4();
-        System.out.println("Temperature: " + temp);
+        
+        // Execute queries
+        System.out.println("Temperature in Vancouver on 2022-10-01 at 10:00: " + query1());
+        System.out.println("Highest windspeed in Portland during September 2022: " + query2());
+        System.out.println("All readings for SeaTac on 2022-10-02: " + query3());
+        System.out.println("Highest temperature in summer 2022: " + query4());
+
         close();
     }
 
-    /**
-     * Close data and admin clients
-     */
-    public void close() {
-        dataClient.close();
-        adminClient.close();
+    public void connect() throws IOException {
+        BigtableDataSettings dataSettings = BigtableDataSettings.newBuilder()
+                .setProjectId(projectId)
+                .setInstanceId(instanceId)
+                .build();
+        dataClient = BigtableDataClient.create(dataSettings);
+
+        BigtableTableAdminSettings adminSettings = BigtableTableAdminSettings.newBuilder()
+                .setProjectId(projectId)
+                .setInstanceId(instanceId)
+                .build();
+        adminClient = BigtableTableAdminClient.create(adminSettings);
+
+        System.out.println("Connected to Bigtable instance.");
     }
 
     public void createTable() {
-        // TODO: Create a table to store sensor data.
-    }
-
-    /**
-     * Loads data into database.
-     * Data is in CSV files. Note that must convert to hourly data.
-     * Take the first reading in a hour and ignore any others.
-     */
-    public void loadData() throws Exception {
-        String path = "bin/data/";
-        // TODO: Load data from CSV files into sensor table
-        // Note: There are multiple different ways that you can decide on how to
-        // organize this data into columns
         try {
-            // SeaTac station id is SEA
-            System.out.println("Load data for SeaTac");
-            // Vancouver station id is YVR
-            System.out.println("Loading data for Vancouver");
-            // Portland station id is PDX
-            System.out.println("Loading data for Portland");
+            CreateTableRequest request = CreateTableRequest.of(tableId)
+                    .addFamily(COLUMN_FAMILY);
+            adminClient.createTable(request);
+            System.out.println("Table created successfully.");
         } catch (Exception e) {
-            throw new Exception(e);
+            System.err.println("Error creating table: " + e.getMessage());
         }
     }
 
-    /**
-     * Query returns the temperature at Vancouver on 2022-10-01 at 10 a.m.
-     **
-     * @return
-     *         ResultSet
-     * @throws SQLException
-     *                      if an error occurs
-     */
+    public void loadData() throws Exception {
+        String path = "bin/data/";
+        File folder = new File(path);
+        File[] files = folder.listFiles((dir, name) -> name.endsWith(".csv"));
+
+        if (files == null) throw new IOException("No data files found in path.");
+
+        for (File file : files) {
+            String stationId = file.getName().split("_")[0];
+            try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String[] fields = line.split(",");
+                    if (fields.length < 7) continue; // Skip invalid rows
+
+                    String rowKey = stationId + "#" + fields[0] + "#" + fields[1]; // Unique key format
+                    RowMutation mutation = RowMutation.create(tableId, rowKey)
+                            .setCell(COLUMN_FAMILY, "temperature", fields[2])
+                            .setCell(COLUMN_FAMILY, "dewpoint", fields[3])
+                            .setCell(COLUMN_FAMILY, "humidity", fields[4])
+                            .setCell(COLUMN_FAMILY, "windspeed", fields[5])
+                            .setCell(COLUMN_FAMILY, "pressure", fields[6]);
+                    dataClient.mutateRow(mutation);
+                }
+            }
+        }
+        System.out.println("Data loaded successfully.");
+    }
+
     public int query1() throws Exception {
-        // TODO: Write query #1
-        System.out.println("Executing query #1.");
-        return 0;
+        String rowKey = "YVR#2022-10-01#10";
+        Row row = dataClient.readRow(tableId, rowKey);
+        return row != null ? Integer.parseInt(row.getCells(COLUMN_FAMILY, "temperature").get(0).getValue().toStringUtf8()) : -1;
     }
 
-    /**
-     * Query returns the highest wind speed in the month of September 2022 in
-     * Portland.
-     **
-     * @return
-     *         ResultSet
-     * @throws SQLException
-     *                      if an error occurs
-     */
     public int query2() throws Exception {
-        // TODO: Write query #2
-        System.out.println("Executing query #2.");
-        int maxWindSpeed = 0;
-        return maxWindSpeed;
+        Query query = Query.create(tableId).prefix("PDX#2022-09");
+        ServerStream<Row> rows = dataClient.readRows(query);
+
+        int maxWindspeed = Integer.MIN_VALUE;
+        for (Row row : rows) {
+            for (RowCell cell : row.getCells(COLUMN_FAMILY, "windspeed")) {
+                maxWindspeed = Math.max(maxWindspeed, Integer.parseInt(cell.getValue().toStringUtf8()));
+            }
+        }
+        return maxWindspeed;
     }
 
-    /**
-     * Query returns all the readings for SeaTac for October 2, 2022. Return as an
-     * ArrayList of objects arrays.
-     * Each object array should have fields: date (string), hour (string),
-     * temperature (int), dewpoint (int), humidity (string), windspeed (string),
-     * pressure (string)
-     **
-     * @return
-     *         ResultSet
-     * @throws SQLException
-     *                      if an error occurs
-     */
-    public ArrayList<Object[]> query3() throws Exception {
-        // TODO: Write query #3
-        System.out.println("Executing query #3.");
-        ArrayList<Object[]> data = new ArrayList<Object[]>();
-        return data;
+    public List<Map<String, String>> query3() throws Exception {
+        Query query = Query.create(tableId).prefix("SEA#2022-10-02");
+        ServerStream<Row> rows = dataClient.readRows(query);
+
+        List<Map<String, String>> results = new ArrayList<>();
+        for (Row row : rows) {
+            Map<String, String> entry = new HashMap<>();
+            for (RowCell cell : row.getCells()) {
+                entry.put(cell.getQualifier().toStringUtf8(), cell.getValue().toStringUtf8());
+            }
+            results.add(entry);
+        }
+        return results;
     }
 
-    /**
-     * Query returns the highest temperature at any station in the summer months of
-     * 2022 (July (7), August (8)).
-     **
-     * @return
-     *         ResultSet
-     * @throws SQLException
-     *                      if an error occurs
-     */
     public int query4() throws Exception {
-        // TODO: Write query #4
-        // Try to avoid reading the entire table. Consider using readRowRanges()
-        // instead.
-        System.out.println("Executing query #4.");
-        int maxTemp = -100;
+        Query query = Query.create(tableId).range("SEA#2022-07", "SEA#2022-09");
+        ServerStream<Row> rows = dataClient.readRows(query);
+
+        int maxTemp = Integer.MIN_VALUE;
+        for (Row row : rows) {
+            for (RowCell cell : row.getCells(COLUMN_FAMILY, "temperature")) {
+                maxTemp = Math.max(maxTemp, Integer.parseInt(cell.getValue().toStringUtf8()));
+            }
+        }
         return maxTemp;
     }
 
-    /**
-     * Create your own query and test case demonstrating some different.
-     **
-     * @return
-     *         ResultSet
-     * @throws SQLException
-     *                      if an error occurs
-     */
-    public int query5() throws Exception {
-        // TODO: Write your own unique query and test case
-        System.out.println("Executing query #5.");
-        return 0;
-    }
-
-    /**
-     * Delete the table from Bigtable.
-     */
     public void deleteTable() {
-        System.out.println("\nDeleting table: " + tableId);
         try {
             adminClient.deleteTable(tableId);
-            System.out.printf("Table %s deleted successfully%n", tableId);
+            System.out.println("Table deleted successfully.");
         } catch (NotFoundException e) {
-            System.err.println("Failed to delete a non-existent table: " + e.getMessage());
+            System.err.println("Table not found: " + e.getMessage());
         }
+    }
+
+    public void close() {
+        dataClient.close();
+        adminClient.close();
+        System.out.println("Clients closed successfully.");
     }
 }
